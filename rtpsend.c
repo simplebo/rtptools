@@ -55,6 +55,7 @@ static int verbose = 0;
 static FILE *in;
 static int sock[2];  /* output sockets */
 static int loop = 0; /* play file indefinitely if set */
+static int istcp = 0;
 
 
 /*
@@ -797,14 +798,29 @@ static Notify_value send_handler(Notify_client client)
   gettimeofday(&this_tv, NULL);
 
   /* send any pending packet */
-  if (packet.length && send(sock[packet.type], packet.data, packet.length, 0) < 0) {
-    perror("write");
+  if (istcp) {
+    if (packet.length) {
+      char tmpbuf[1502];
+      tmpbuf[0] = packet.length >> 8;
+      tmpbuf[1] = packet.length & 0xff;
+      memcpy(tmpbuf + 2, packet.data, packet.length);
+      if (send(sock[0], tmpbuf, packet.length + 2, 0) < 0) {
+        perror("write");
+      }
+    }
+  }
+  else {
+    if (packet.length && send(sock[packet.type], packet.data, packet.length, 0) < 0) {
+      perror("write");
+    }
   }
 
   /* read line; continuation lines start with white space */
   if (feof(in)) {
     if (loop) {
       fseek(in, 0, SEEK_SET);
+      isfirstpacket = 1;
+      line[0] = 0; /// diacard last packet
       printf("Rewound input file\n");
     }
     else {
@@ -839,8 +855,9 @@ static Notify_value send_handler(Notify_client client)
 
   timersub(&next_tv, &this_tv, &past_tv);
   if (past_tv.tv_sec < 0) {
-    fprintf(stderr, "Non-monotonic time %ld.%ld - sent immediately.\n", 
-            packet.time.tv_sec, (long)packet.time.tv_usec);
+    fprintf(stderr, "Non-monotonic time %ld.%06ld, timer %ld.%06ld - sent immediately.\n", 
+            packet.time.tv_sec, (long)packet.time.tv_usec,
+            past_tv.tv_sec, (long)past_tv.tv_usec);
     next_tv = this_tv;
   }
 
@@ -866,7 +883,7 @@ int main(int argc, char *argv[])
 
   /* parse command line arguments */
   startupSocket();
-  while ((c = getopt(argc, argv, "f:als:v?h")) != EOF) {
+  while ((c = getopt(argc, argv, "f:alts:v?h")) != EOF) {
     switch(c) {
     case 'f':
       filename = optarg;
@@ -876,6 +893,9 @@ int main(int argc, char *argv[])
       break;
     case 'l':  /* loop */
       loop = 1;
+      break;
+    case 't':
+      istcp = 1;
       break;
     case 's':  /* locked source port */
       sourceport = atoi(optarg);
@@ -921,8 +941,17 @@ int main(int argc, char *argv[])
   }
 
   /* create/connect sockets */
-  for (i = 0; i < 2; i++) {
-    sock[i] = socket(PF_INET, SOCK_DGRAM, 0);
+  int sock_count = istcp ? 1 : 2;
+  for (i = 0; i < sock_count; i++) {
+    if (istcp)
+    {
+      sock[i] = socket(PF_INET, SOCK_STREAM, 0);
+    }
+    else
+    {
+      sock[i] = socket(PF_INET, SOCK_DGRAM, 0);
+    }
+    
     if (sock[i] < 0) {
       perror("socket");
       exit(1);

@@ -68,6 +68,7 @@ static int first = -1;         /* time offset of first packet */
 static uint32_t last = 0;      /* time offset of last  packet */
 static int progressValue = 0;  /* percent */
 static RD_buffer_t buffer[READAHEAD];
+static int istcp = 0;
 
 struct rtts {
 	struct timeval	rt; /* real time */
@@ -104,7 +105,7 @@ insert(struct ssrc* ssrc)
 static void usage(char *argv0)
 {
   fprintf(stderr, "usage: %s "
-	"[-hTv] [-b begin] [-e end] [-f file] [-s port] "
+	"[-htTv] [-b begin] [-e end] [-f file] [-s port] "
 	"address/port[/ttl]\n", argv0);
   exit(1);
 } /* usage */
@@ -121,11 +122,29 @@ static double tdbl(struct timeval *a)
 */
 static void play_transmit(int b)
 {
-  if (b >= 0 && buffer[b].p.hdr.length) {
-    if (send(sock[buffer[b].p.hdr.plen == 0],
-        buffer[b].p.data, buffer[b].p.hdr.length, 0) < 0) {
-      perror("write");
-    }
+  static char data[65536];
+
+  if (b >= 0 && buffer[b].p.hdr.length)
+  {
+        if (istcp)
+        {
+            uint16_t len = htons(buffer[b].p.hdr.length);
+            memcpy(data, (char *)&len, 2);
+            memcpy(data + 2, buffer[b].p.data, buffer[b].p.hdr.length);
+            if (send(sock[buffer[b].p.hdr.plen == 0],
+                     data, buffer[b].p.hdr.length + 2, 0) < 0)
+            {
+                perror("write");
+            }
+        }
+        else
+        {
+            if (send(sock[buffer[b].p.hdr.plen == 0],
+                     buffer[b].p.data, buffer[b].p.hdr.length, 0) < 0)
+            {
+                perror("write");
+            }
+        }
 
     buffer[b].p.hdr.length = 0;
   }
@@ -285,7 +304,7 @@ int main(int argc, char *argv[])
   in = stdin; /* Changed below if -f specified */
 
   /* parse command line arguments */
-  while ((c = getopt(argc, argv, "b:e:f:p:Ts:vzh")) != EOF) {
+  while ((c = getopt(argc, argv, "b:e:f:p:Ts:vzht")) != EOF) {
     switch(c) {
     case 'b':
       begin = atof(optarg) * 1000;
@@ -298,6 +317,9 @@ int main(int argc, char *argv[])
         perror(optarg);
         exit(1);
       }
+      break;
+    case 't':
+      istcp = 1;
       break;
     case 'T':
       wallclock = 1;
@@ -365,9 +387,14 @@ int main(int argc, char *argv[])
   }
 
   /* create/connect sockets if they don't exist already */
+  int sock_count = istcp ? 1 : 2;
   if (!sock[0]) {
-    for (i = 0; i < 2; i++) {
-      sock[i] = socket(PF_INET, SOCK_DGRAM, 0);
+    for (i = 0; i < sock_count; i++) {
+      if(istcp) {
+        sock[i] = socket(PF_INET, SOCK_STREAM, 0);
+      } else {
+        sock[i] = socket(PF_INET, SOCK_DGRAM, 0);
+      }
       if (sock[i] < 0) {
         perror("socket");
         exit(1);
